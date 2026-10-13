@@ -32,7 +32,7 @@ class VoiceCoach(context: Context) {
         if (cue == "Position yourself in frame" || cue == "Get in position" || cue == "--°") return
         pendingCue = cue
         scheduled?.let(handler::removeCallbacks)
-        val wait = (2_500L - (SystemClock.elapsedRealtime() - lastSpokenAt)).coerceAtLeast(0L)
+        val wait = (800L - (SystemClock.elapsedRealtime() - lastSpokenAt)).coerceAtLeast(0L)
         scheduled = Runnable { deliverPendingCue() }
         handler.postDelayed(scheduled!!, wait)
     }
@@ -41,7 +41,7 @@ class VoiceCoach(context: Context) {
         val cue = pendingCue ?: return
         if (!ready) return
         pendingCue = null
-        if (cue == lastSpokenCue && SystemClock.elapsedRealtime() - lastSpokenAt < 5_000L) return
+        if (cue == lastSpokenCue && SystemClock.elapsedRealtime() - lastSpokenAt < 2_000L) return
         lastSpokenCue = cue
         lastSpokenAt = SystemClock.elapsedRealtime()
         engine?.speak(cue, TextToSpeech.QUEUE_FLUSH, Bundle(), "form-cue-${lastSpokenAt}")

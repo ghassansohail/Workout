@@ -80,13 +80,15 @@ private fun FormCoachApp() {
     var feedback by remember { mutableStateOf("Position yourself in frame") }
     var angle by remember { mutableStateOf("--°") }
     var voiceEnabled by remember { mutableStateOf(true) }
+    var cameraFacing by remember { mutableStateOf(CameraFacing.FRONT) }
+    var voiceCue by remember { mutableStateOf<String?>(null) }
     val voiceCoach = remember(context) { VoiceCoach(context) }
 
     DisposableEffect(voiceCoach) {
         onDispose { voiceCoach.shutdown() }
     }
-    LaunchedEffect(feedback, voiceEnabled) {
-        if (voiceEnabled) voiceCoach.speak(feedback) else voiceCoach.stop()
+    LaunchedEffect(voiceCue, voiceEnabled) {
+        if (!voiceEnabled) voiceCoach.stop() else voiceCue?.let(voiceCoach::speak)
     }
 
     LaunchedEffect(Unit) {
@@ -117,7 +119,14 @@ private fun FormCoachApp() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Exercise.entries.forEach { item ->
                         AssistChip(
-                            onClick = { exercise = item; reps = 0; feedback = "Get in position"; angle = "--°" },
+                            onClick = {
+                                voiceCoach.stop()
+                                exercise = item
+                                reps = 0
+                                feedback = "Get in position"
+                                angle = "--°"
+                                voiceCue = null
+                            },
                             label = { Text(item.label, fontWeight = FontWeight.SemiBold) },
                             colors = AssistChipDefaults.assistChipColors(
                                 containerColor = if (exercise == item) Mint else Panel,
@@ -132,11 +141,29 @@ private fun FormCoachApp() {
                     if (cameraGranted) {
                         CameraPreview(
                             exercise = exercise,
-                            onResult = { result -> reps = result.reps; feedback = result.feedback; angle = result.angle }
+                            cameraFacing = cameraFacing,
+                            onResult = { result ->
+                                reps = result.reps
+                                feedback = result.feedback
+                                angle = result.angle
+                                voiceCue = result.voiceCue
+                            }
                         )
                         Column(Modifier.align(Alignment.TopStart).padding(16.dp)) {
                             Text("LIVE FORM CHECK", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xAA101212)).padding(horizontal = 12.dp, vertical = 8.dp))
+                        }
+                        Button(
+                            onClick = {
+                                voiceCoach.stop()
+                                cameraFacing = if (cameraFacing == CameraFacing.FRONT) CameraFacing.BACK else CameraFacing.FRONT
+                                feedback = "Switching camera…"
+                                voiceCue = null
+                            },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC101212), contentColor = Color.White)
+                        ) {
+                            Text(if (cameraFacing == CameraFacing.FRONT) "Use rear camera" else "Use front camera")
                         }
                     } else {
                         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -163,12 +190,12 @@ private fun FormCoachApp() {
                     Column(Modifier.weight(1f)) {
                         Text("COACH CUE", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
                         Spacer(Modifier.height(3.dp))
-                        Text(feedback, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        Text(feedback.ifBlank { "Form looks good" }, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                     }
                     IconButton(onClick = { voiceEnabled = !voiceEnabled }) {
                         androidx.compose.material3.Icon(
                             imageVector = if (voiceEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                            contentDescription = if (voiceEnabled) "Turn voice cues off" else "Turn voice cues on",
+                            contentDescription = if (voiceEnabled) "Mute voice; keep text instructions" else "Unmute voice instructions",
                             tint = if (voiceEnabled) Mint else Muted
                         )
                     }
@@ -190,15 +217,15 @@ private fun MetricCard(label: String, value: String, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun CameraPreview(exercise: Exercise, onResult: (CoachResult) -> Unit) {
+private fun CameraPreview(exercise: Exercise, cameraFacing: CameraFacing, onResult: (CoachResult) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val camera = remember(context) { PoseCameraController(context) }
     DisposableEffect(camera) {
         onDispose { camera.dispose() }
     }
-    DisposableEffect(lifecycleOwner, exercise) {
-        camera.start(lifecycleOwner, exercise, onResult)
+    DisposableEffect(lifecycleOwner, exercise, cameraFacing) {
+        camera.start(lifecycleOwner, exercise, cameraFacing, onResult)
         onDispose { camera.stop() }
     }
     AndroidView(
