@@ -15,7 +15,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
-import com.google.mlkit.vision.pose.PoseDetectorOptions
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import com.google.mlkit.vision.pose.PoseLandmark
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
