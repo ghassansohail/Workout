@@ -82,13 +82,14 @@ private fun FormCoachApp() {
     var voiceEnabled by remember { mutableStateOf(true) }
     var cameraFacing by remember { mutableStateOf(CameraFacing.FRONT) }
     var voiceCue by remember { mutableStateOf<String?>(null) }
+    var personDetected by remember { mutableStateOf(false) }
     val voiceCoach = remember(context) { VoiceCoach(context) }
 
     DisposableEffect(voiceCoach) {
         onDispose { voiceCoach.shutdown() }
     }
-    LaunchedEffect(voiceCue, voiceEnabled) {
-        if (!voiceEnabled) voiceCoach.stop() else voiceCue?.let(voiceCoach::speak)
+    LaunchedEffect(voiceCue, voiceEnabled, personDetected) {
+        if (!voiceEnabled || !personDetected) voiceCoach.stop() else voiceCue?.let(voiceCoach::speak)
     }
 
     LaunchedEffect(Unit) {
@@ -110,7 +111,12 @@ private fun FormCoachApp() {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(7.dp).clip(CircleShape).background(if (cameraGranted) Mint else Color(0xFFFFB86C)))
                         Spacer(Modifier.width(6.dp))
-                        Text(if (cameraGranted) "LIVE" else "CAMERA", color = if (cameraGranted) Mint else Color(0xFFFFB86C), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (!cameraGranted) "CAMERA" else if (personDetected) "TRACKING" else "SEARCHING",
+                            color = if (personDetected) Mint else Color(0xFFFFB86C),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
                 Spacer(Modifier.height(22.dp))
@@ -126,6 +132,7 @@ private fun FormCoachApp() {
                                 feedback = "Get in position"
                                 angle = "--°"
                                 voiceCue = null
+                                personDetected = false
                             },
                             label = { Text(item.label, fontWeight = FontWeight.SemiBold) },
                             colors = AssistChipDefaults.assistChipColors(
@@ -147,6 +154,7 @@ private fun FormCoachApp() {
                                 feedback = result.feedback
                                 angle = result.angle
                                 voiceCue = result.voiceCue
+                                personDetected = result.personDetected
                             }
                         )
                         Column(Modifier.align(Alignment.TopStart).padding(16.dp)) {
@@ -159,6 +167,7 @@ private fun FormCoachApp() {
                                 cameraFacing = if (cameraFacing == CameraFacing.FRONT) CameraFacing.BACK else CameraFacing.FRONT
                                 feedback = "Switching camera…"
                                 voiceCue = null
+                                personDetected = false
                             },
                             modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC101212), contentColor = Color.White)
@@ -201,7 +210,7 @@ private fun FormCoachApp() {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("Camera-based guidance is an estimate. Stop if anything hurts.", color = Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                Text("Camera guidance is an estimate. Stop if you feel pain or develop a headache.", color = Muted, fontSize = 11.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
             }
         }
     }

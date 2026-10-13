@@ -19,6 +19,7 @@ import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import com.google.mlkit.vision.pose.PoseLandmark
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.sqrt
 
@@ -28,7 +29,13 @@ enum class Exercise(val label: String) {
 
 enum class CameraFacing { FRONT, BACK }
 
-data class CoachResult(val reps: Int, val angle: String, val feedback: String, val voiceCue: String? = null)
+data class CoachResult(
+    val reps: Int,
+    val angle: String,
+    val feedback: String,
+    val voiceCue: String? = null,
+    val personDetected: Boolean = true
+)
 
 /** Owns the local camera stream and on-device pose detector for the active screen. */
 class PoseCameraController(context: Context) {
@@ -66,12 +73,12 @@ class PoseCameraController(context: Context) {
             try {
                 provider.unbindAll()
                 if (!provider.hasCamera(cameraSelector)) {
-                    onResult(CoachResult(0, "--°", "That camera is not available on this device."))
+                    onResult(CoachResult(0, "--°", "That camera is not available on this device.", personDetected = false))
                     return@addListener
                 }
                 provider.bindToLifecycle(owner, cameraSelector, preview, analysis)
             } catch (_: Exception) {
-                onResult(CoachResult(0, "--°", "Unable to start camera. Try again."))
+                onResult(CoachResult(0, "--°", "Unable to start camera. Try again.", personDetected = false))
             }
         }, ContextCompat.getMainExecutor(appContext))
     }
@@ -80,12 +87,15 @@ class PoseCameraController(context: Context) {
         val mediaImage = proxy.image
         if (mediaImage == null) {
             proxy.close()
+            onResult(CoachResult(coach.reps, "--°", "Move fully into view. Coaching paused.", personDetected = false))
             return
         }
         val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
         detector.process(image)
             .addOnSuccessListener { pose -> onResult(coach.update(pose, exercise)) }
-            .addOnFailureListener { onResult(CoachResult(coach.reps, "--°", "Tracking paused—adjust your position")) }
+            .addOnFailureListener {
+                onResult(CoachResult(coach.reps, "--°", "Move fully into view. Coaching paused.", personDetected = false))
+            }
             .addOnCompleteListener { proxy.close() }
     }
 
@@ -118,9 +128,18 @@ private class RepCoach {
     private var lastJointAngle: Double? = null
 
     fun update(pose: Pose, exercise: Exercise): CoachResult {
-        if (pose.allPoseLandmarks.isEmpty()) return setupPrompt("Step back until your full body is visible")
-
         val side = chooseSide(pose, exercise)
+        if (!hasReliablePerson(pose, side, exercise)) {
+            stage = Stage.SETUP
+            readySince = 0L
+            descended = false
+            reachedDepth = false
+            warnedAboutDepth = false
+            activeFault = null
+            lastSetupPrompt = null
+            return CoachResult(reps, "--°", "Move fully into view. Coaching paused.", personDetected = false)
+        }
+
         val jointAngle = when (exercise) {
             Exercise.SQUAT -> angle(
                 side.point(pose, PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP),
@@ -141,18 +160,40 @@ private class RepCoach {
                 side.point(pose, PoseLandmark.LEFT_ANKLE, PoseLandmark.RIGHT_ANKLE)
             )
         } else null
+        val shoulderHandOffset = if (exercise == Exercise.PUSH_UP) {
+            val shoulder = side.point(pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER)
+            val wrist = side.point(pose, PoseLandmark.LEFT_WRIST, PoseLandmark.RIGHT_WRIST)
+            val hip = side.point(pose, PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP)
+            if (shoulder != null && wrist != null && hip != null) {
+                abs(shoulder.x - wrist.x) / distance(shoulder, hip)
+            } else null
+        } else null
+        val curlElbowOffset = if (exercise == Exercise.CURL) {
+            val shoulder = side.point(pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER)
+            val elbow = side.point(pose, PoseLandmark.LEFT_ELBOW, PoseLandmark.RIGHT_ELBOW)
+            val hip = side.point(pose, PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP)
+            if (shoulder != null && elbow != null && hip != null) {
+                abs(elbow.x - hip.x) / distance(shoulder, hip)
+            } else null
+        } else null
         val setupError = when (exercise) {
             Exercise.SQUAT -> when {
                 trunkAngle == null -> "Step back so your shoulders, hips, and ankles are visible"
+                headCue(pose, side) != null -> headCue(pose, side)
                 trunkAngle < 105 -> "Stand tall and keep your chest lifted"
                 else -> null
             }
             Exercise.PUSH_UP -> when {
                 trunkAngle == null -> "Step back so your shoulders, hips, and ankles are visible"
+                headCue(pose, side) != null -> headCue(pose, side)
+                shoulderHandOffset != null && shoulderHandOffset > 0.35 -> "Place your hands under your shoulders"
                 trunkAngle < 150 -> "Make a straight line from shoulders to ankles"
                 else -> null
             }
-            Exercise.CURL -> null
+            Exercise.CURL -> when {
+                curlElbowOffset != null && curlElbowOffset > 0.35 -> "Keep your upper arm close to your side"
+                else -> null
+            }
         }
         val startAngle = if (exercise == Exercise.SQUAT) 155.0 else 150.0
         val ready = jointAngle >= startAngle && setupError == null
@@ -163,7 +204,7 @@ private class RepCoach {
             if (!ready) {
                 readySince = 0L
                 val instruction = setupError ?: when (exercise) {
-                    Exercise.SQUAT -> "Stand tall with feet shoulder-width apart"
+                    Exercise.SQUAT -> "Stand tall with feet shoulder-width apart; keep knees over toes"
                     Exercise.PUSH_UP -> "Start in a straight-arm plank position"
                     Exercise.CURL -> "Stand tall with your arms by your sides"
                 }
@@ -177,7 +218,11 @@ private class RepCoach {
             lastWaitReminderAt = 0L
             lastSetupPrompt = null
             lastJointAngle = jointAngle
-            val cue = "Ready. Start your ${exercise.label.lowercase()} when you're set."
+            val cue = when (exercise) {
+                Exercise.SQUAT -> "Ready. Keep your knees over your toes and head neutral. Start your squat when you're set."
+                Exercise.PUSH_UP -> "Ready. Keep elbows angled back and head neutral. Start your push-up when you're set."
+                Exercise.CURL -> "Ready. Keep your upper arms still. Start your curl when you're set."
+            }
             return CoachResult(reps, angleText, cue, cue)
         }
 
@@ -250,6 +295,44 @@ private class RepCoach {
         activeFault = text
         return CoachResult(reps, angle, text, voiceCue)
     }
+
+    private fun hasReliablePerson(pose: Pose, side: Side, exercise: Exercise): Boolean {
+        val required = when (exercise) {
+            Exercise.SQUAT -> listOf(
+                PoseLandmark.LEFT_SHOULDER to PoseLandmark.RIGHT_SHOULDER,
+                PoseLandmark.LEFT_HIP to PoseLandmark.RIGHT_HIP,
+                PoseLandmark.LEFT_KNEE to PoseLandmark.RIGHT_KNEE,
+                PoseLandmark.LEFT_ANKLE to PoseLandmark.RIGHT_ANKLE
+            )
+            Exercise.PUSH_UP -> listOf(
+                PoseLandmark.LEFT_SHOULDER to PoseLandmark.RIGHT_SHOULDER,
+                PoseLandmark.LEFT_ELBOW to PoseLandmark.RIGHT_ELBOW,
+                PoseLandmark.LEFT_WRIST to PoseLandmark.RIGHT_WRIST,
+                PoseLandmark.LEFT_HIP to PoseLandmark.RIGHT_HIP,
+                PoseLandmark.LEFT_ANKLE to PoseLandmark.RIGHT_ANKLE
+            )
+            Exercise.CURL -> listOf(
+                PoseLandmark.LEFT_SHOULDER to PoseLandmark.RIGHT_SHOULDER,
+                PoseLandmark.LEFT_ELBOW to PoseLandmark.RIGHT_ELBOW,
+                PoseLandmark.LEFT_WRIST to PoseLandmark.RIGHT_WRIST
+            )
+        }
+        return required.all { (left, right) ->
+            val point = pose.getPoseLandmark(if (side == Side.LEFT) left else right)
+            point != null && point.inFrameLikelihood >= 0.55f
+        }
+    }
+
+    private fun headCue(pose: Pose, side: Side): String? {
+        val ear = side.point(pose, PoseLandmark.LEFT_EAR, PoseLandmark.RIGHT_EAR) ?: return null
+        val shoulder = side.point(pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER) ?: return null
+        val hip = side.point(pose, PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP) ?: return null
+        val alignment = angle(ear, shoulder, hip) ?: return null
+        return if (alignment < 145) "Keep your head in line with your spine; look slightly ahead" else null
+    }
+
+    private fun distance(a: Point, b: Point): Double =
+        sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).coerceAtLeast(0.0001)
 
     private fun chooseSide(pose: Pose, exercise: Exercise): Side {
         val landmarks = when (exercise) {
