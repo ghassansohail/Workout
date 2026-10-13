@@ -178,6 +178,7 @@ private class RepCoach {
         } else null
         val setupError = when (exercise) {
             Exercise.SQUAT -> when {
+                squatFrontalSetupCue(pose) != null -> squatFrontalSetupCue(pose)
                 trunkAngle == null -> "Step back so your shoulders, hips, and ankles are visible"
                 headCue(pose, side) != null -> headCue(pose, side)
                 trunkAngle < 105 -> "Stand tall and keep your chest lifted"
@@ -191,6 +192,7 @@ private class RepCoach {
                 else -> null
             }
             Exercise.CURL -> when {
+                headCue(pose, side) != null -> headCue(pose, side)
                 curlElbowOffset != null && curlElbowOffset > 0.35 -> "Keep your upper arm close to your side"
                 else -> null
             }
@@ -250,10 +252,16 @@ private class RepCoach {
         }
 
         if (setupError != null) return activeWarning(setupError, angleText)
-        activeFault = null
+        if (!warnedAboutDepth) activeFault = null
         val previousAngle = lastJointAngle ?: jointAngle
         lastJointAngle = jointAngle
-        if (jointAngle <= depthThreshold(exercise)) reachedDepth = true
+        if (jointAngle <= depthThreshold(exercise)) {
+            reachedDepth = true
+            if (warnedAboutDepth) {
+                warnedAboutDepth = false
+                activeFault = null
+            }
+        }
         if (jointAngle < startAngle) descended = true
 
         val risingTooSoon = descended && !reachedDepth && jointAngle > previousAngle + 4
@@ -272,10 +280,11 @@ private class RepCoach {
             descended = false
             reachedDepth = false
             warnedAboutDepth = false
+            activeFault = null
             lastJointAngle = jointAngle
         }
         // Correct movement is intentionally silent. The rep counter and live angle remain visible.
-        return CoachResult(reps, angleText, "")
+        return CoachResult(reps, angleText, activeFault.orEmpty())
     }
 
     private fun depthThreshold(exercise: Exercise) = when (exercise) {
@@ -330,6 +339,34 @@ private class RepCoach {
         val alignment = angle(ear, shoulder, hip) ?: return null
         return if (alignment < 145) "Keep your head in line with your spine; look slightly ahead" else null
     }
+
+    /** Check foot spacing from a front-facing setup view, then ask for a side view to check depth. */
+    private fun squatFrontalSetupCue(pose: Pose): String? {
+        val leftShoulder = landmarkPoint(pose, PoseLandmark.LEFT_SHOULDER) ?: return null
+        val rightShoulder = landmarkPoint(pose, PoseLandmark.RIGHT_SHOULDER) ?: return null
+        val leftHip = landmarkPoint(pose, PoseLandmark.LEFT_HIP) ?: return null
+        val rightHip = landmarkPoint(pose, PoseLandmark.RIGHT_HIP) ?: return null
+        val leftAnkle = landmarkPoint(pose, PoseLandmark.LEFT_ANKLE) ?: return null
+        val rightAnkle = landmarkPoint(pose, PoseLandmark.RIGHT_ANKLE) ?: return null
+        val shoulderWidth = distance(leftShoulder, rightShoulder)
+        val torsoHeight = distance(midpoint(leftShoulder, rightShoulder), midpoint(leftHip, rightHip))
+        if (shoulderWidth / torsoHeight < 0.65) return null
+
+        val stanceRatio = distance(leftAnkle, rightAnkle) / shoulderWidth
+        return when {
+            stanceRatio < 0.65 -> "Move your feet apart to about shoulder-width"
+            stanceRatio > 1.8 -> "Bring your feet closer to shoulder-width"
+            else -> "Feet look set. Turn sideways so I can check squat depth"
+        }
+    }
+
+    private fun landmarkPoint(pose: Pose, landmarkType: Int): Point? {
+        val landmark = pose.getPoseLandmark(landmarkType) ?: return null
+        if (landmark.inFrameLikelihood < 0.55f) return null
+        return Point(landmark.position.x.toDouble(), landmark.position.y.toDouble())
+    }
+
+    private fun midpoint(a: Point, b: Point) = Point((a.x + b.x) / 2, (a.y + b.y) / 2)
 
     private fun distance(a: Point, b: Point): Double =
         sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).coerceAtLeast(0.0001)
