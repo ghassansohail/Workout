@@ -35,7 +35,16 @@ jobs:
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Build debug APK
-        run: gradle --no-daemon --stacktrace --console=plain :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace --console=plain :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '(^e: |^FAILURE:|Execution failed for task|Could not (resolve|find)|^> .*FAILED|^ *\* What went wrong:)' "$RUNNER_TEMP/gradle-build.log" \
+              | head -n 20 \
+              | while IFS= read -r line; do echo "::error title=Gradle build diagnostic::$line"; done
+          fi
+          exit "$status"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
