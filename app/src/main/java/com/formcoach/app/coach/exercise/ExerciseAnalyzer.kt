@@ -132,11 +132,17 @@ abstract class ExerciseAnalyzer(val exercise: Exercise, protected val config: Ex
     /** Outlier rejection limit for each signal, units per second. */
     abstract val maxRatePerSec: Double
 
+    /** Outlier rejection slack per frame (see [com.formcoach.app.coach.RepCounterConfig.outlierSlack]). */
+    abstract val outlierSlack: Double
+
     /** Feeds one smoothed, tracked frame. */
     abstract fun process(body: Body): List<AnalyzerResult>
 
-    /** Abandons any rep in progress (tracking lost). */
+    /** Abandons any rep in progress (tracking lost). Call [flushPending] first. */
     abstract fun abandon()
+
+    /** Results the analyzer is holding back (curl merge window), released now: before a pause or set end. */
+    open fun flushPending(): List<AnalyzerResult> = emptyList()
 
     /** Time since which every counter has rested in the top zone, or null. */
     abstract fun restSinceMs(): Long?

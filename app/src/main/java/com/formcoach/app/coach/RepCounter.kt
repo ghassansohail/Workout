@@ -35,6 +35,11 @@ sealed interface RepCounterEvent {
         /** Estimated duration of the whole down phase and the whole up phase (top value <-> bottom). */
         val downMs: Long,
         val upMs: Long,
+        /**
+         * Depth was never seen: it was inside a tracking gap and estimated (see RepCounter.bridgedExtreme).
+         * Movement gates that measure the depth itself (hip or shoulder drop) cannot be checked on such a rep.
+         */
+        val bridged: Boolean = false,
     ) : RepCounterEvent {
         val durationMs: Long get() = endMs - startMs
     }
@@ -113,9 +118,31 @@ class RepCounter(val config: RepCounterConfig) {
         sampleD.clear()
     }
 
+    private var lastD = 0.0
+
+    /**
+     * While coming back up after the bottom (UP phase): how far the signal has returned from the extreme
+     * toward the top zone, 0 at the extreme and 1 at the top-zone boundary. Null in any other phase.
+     */
+    fun returnProgress(): Double? {
+        if (phase != RepPhase.UP) return null
+        val span = extreme - topD
+        if (span <= 1e-9) return null
+        return ((extreme - lastD) / span).coerceIn(0.0, 1.0)
+    }
+
+    private var lastSampleMs = 0L
+
     fun update(timestampMs: Long, value: Double): RepCounterEvent? {
         val t = timestampMs
         val d = deep(value)
+        lastD = d
+        val event = step(t, d)
+        lastSampleMs = t
+        return event
+    }
+
+    private fun step(t: Long, d: Double): RepCounterEvent? {
         val inTop = d <= topD
         when (phase) {
             RepPhase.WAIT_TOP -> {
@@ -188,7 +215,11 @@ class RepCounter(val config: RepCounterConfig) {
                 if (d >= depthD) {
                     val since = depthStartMs ?: t.also { depthStartMs = it; depthRun = 0 }
                     depthRun++
-                    if (depthRun >= config.bottomDwellFrames && t - since >= config.bottomDwellMs) {
+                    // Each frame stands for one frame interval, so the dwell is measured from the start of the
+                    // first frame at depth: 2 frames at 30 fps hold ~67 ms. Without that, 2 frames at 30 fps
+                    // span only 33 ms and fast reps (0.7 s squats) miss the plan's 60 ms dwell.
+                    val dwell = t - since + (t - lastSampleMs).coerceIn(0L, 100L)
+                    if (depthRun >= config.bottomDwellFrames && dwell >= config.bottomDwellMs) {
                         phase = RepPhase.BOTTOM
                         minSinceBottom = d
                         minSinceBottomAt = t
@@ -243,7 +274,20 @@ class RepCounter(val config: RepCounterConfig) {
     private fun finish(t: Long, d: Double): RepCounterEvent? {
         val endMs = firstTopMs
         val duration = endMs - startMs
-        val reachedBottom = phase == RepPhase.BOTTOM || phase == RepPhase.UP
+        var reachedBottom = phase == RepPhase.BOTTOM || phase == RepPhase.UP
+        bridgedGap = null
+        if (!reachedBottom && !expired) {
+            // The bottom may have been hidden by a tracking gap (dropout within the grace period).
+            val est = bridgedExtreme()
+            if (est != null && est >= depthD) {
+                reachedBottom = true
+                bridgedGap = lastGap
+                if (extreme < depthD) extreme = depthD
+            } else if (est != null && est > extreme) {
+                // Not deep enough even with the hidden part: the estimate still decides whether it was an attempt.
+                extreme = est
+            }
+        }
         val event: RepCounterEvent? = when {
             expired || duration > config.maxDurationMs -> null
             reachedBottom -> completed(endMs, t).takeIf {
@@ -265,6 +309,60 @@ class RepCounter(val config: RepCounterConfig) {
         return event
     }
 
+    /**
+     * Depth estimated across the longest tracking gap of the current attempt, or null without such a gap.
+     * The signal's slope is fitted over the frames just before the gap (going deeper) and just after it
+     * (coming back). The two slopes are averaged and the signal is extended from both edges as a
+     * symmetric V; where the lines meet is the estimate. Averaging matters because the One Euro filter
+     * restarts after a long gap, so the first slope after it is noisy. A real bottom is round, so the
+     * straight lines overestimate the depth a little: a shallow 125° squat hidden by a 500 ms gap still
+     * estimates ~119°, a 90° squat ~89°.
+     */
+    private var lastGap: Pair<Long, Long>? = null
+    private var bridgedGap: Pair<Long, Long>? = null
+
+    private fun bridgedExtreme(): Double? {
+        var gi = -1
+        var gap = 0L
+        for (i in 0 until sampleT.size - 1) {
+            val g = sampleT[i + 1] - sampleT[i]
+            if (g > gap) {
+                gap = g
+                gi = i
+            }
+        }
+        if (gi < 1 || gap < config.bridgeMinGapMs || gi + 2 >= sampleT.size) return null
+        val t1 = sampleT[gi]
+        val t2 = sampleT[gi + 1]
+        lastGap = t1 to t2
+        val d1 = sampleD[gi]
+        val d2 = sampleD[gi + 1]
+        val window = config.bridgeSlopeWindowMs
+        val a = slope((0..gi).filter { t1 - sampleT[it] <= window }) ?: return null // per ms, + = deeper
+        val b = slope((gi + 1 until sampleT.size).filter { sampleT[it] - t2 <= window }) ?: return null
+        val maxRate = config.maxRatePerSec / 1000.0
+        val m = ((a.coerceIn(0.0, maxRate) + (-b).coerceIn(0.0, maxRate)) / 2)
+        if (m <= 0.0) return max(d1, d2) // no turn inside the gap
+        // Lines d1 + m (t - t1) and d2 - m (t - t2) meet at tm; clamp to the gap.
+        val tm = ((d2 - d1 + m * (t1 + t2)) / (2 * m)).coerceIn(t1.toDouble(), t2.toDouble())
+        return d1 + m * (tm - t1)
+    }
+
+    /** Least-squares slope (deep units per ms) over the samples at [idx]; null with fewer than 2. */
+    private fun slope(idx: List<Int>): Double? {
+        if (idx.size < 2) return null
+        val mt = idx.sumOf { sampleT[it].toDouble() } / idx.size
+        val md = idx.sumOf { sampleD[it] } / idx.size
+        var num = 0.0
+        var den = 0.0
+        for (i in idx) {
+            val dt = sampleT[i] - mt
+            num += dt * (sampleD[i] - md)
+            den += dt * dt
+        }
+        return if (den < 1e-9) null else num / den
+    }
+
     private fun completed(endMs: Long, confirmMs: Long): RepCounterEvent.Completed {
         val ref = calD
         val ex = max(extreme - ref, 1e-9)
@@ -281,9 +379,11 @@ class RepCounter(val config: RepCounterConfig) {
                 t90Up = sampleT[i]
             }
         }
+        val gap = bridgedGap
         if (!found) {
-            t90Down = startMs
-            t90Up = endMs
+            // A bridged bottom lies inside the gap; otherwise fall back to the whole rep.
+            t90Down = gap?.first ?: startMs
+            t90Up = gap?.second ?: endMs
         }
         val fTop = ((topD - ref) / ex).coerceIn(0.0, frac)
         val span = frac - fTop
@@ -300,6 +400,7 @@ class RepCounter(val config: RepCounterConfig) {
             bottomEndMs = t90Up,
             downMs = downMs,
             upMs = upMs,
+            bridged = gap != null,
         )
     }
 }

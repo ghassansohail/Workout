@@ -75,6 +75,8 @@ class SquatAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.SQUAT, c
 
     override val maxRatePerSec: Double
         get() = if (view == CameraView.FRONT) c.frontCounter.maxRatePerSec else c.sideCounter.maxRatePerSec
+    override val outlierSlack: Double
+        get() = if (view == CameraView.FRONT) c.frontCounter.outlierSlack else c.sideCounter.outlierSlack
 
     override fun primaryLabel(view: CameraView) = if (view == CameraView.FRONT) "HIP DROP" else "KNEE ANGLE"
 
@@ -263,7 +265,7 @@ class SquatAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.SQUAT, c
     private fun evaluate(e: RepCounterEvent.Completed): List<AnalyzerResult> {
         val rep = frames.between(e.startMs, e.endMs)
         if (!patternGatesPass(rep)) return emptyList()
-        if (view == CameraView.SIDE) {
+        if (view == CameraView.SIDE && !e.bridged) {
             val startHip = rep.first().hipY
             val drop = rep.maxOf { it.hipY } - startHip
             if (drop < c.gateHipDropLeg * legLength) return emptyList()

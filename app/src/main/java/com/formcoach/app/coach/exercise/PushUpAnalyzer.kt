@@ -58,6 +58,7 @@ class PushUpAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.PUSH_UP
     private val frames = FrameBuffer<F>(c.counter.maxDurationMs + 3000)
 
     override val maxRatePerSec: Double get() = c.counter.maxRatePerSec
+    override val outlierSlack: Double get() = c.counter.outlierSlack
 
     override fun primaryLabel(view: CameraView) = "ELBOW ANGLE"
 
@@ -164,7 +165,7 @@ class PushUpAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.PUSH_UP
         val rep = frames.between(e.startMs, e.endMs)
         if (!patternGatesPass(rep)) return emptyList()
         val drop = rep.maxOf { it.shoulderY } - rep.first().shoulderY
-        if (drop < c.gateShoulderDropArm * armLength) return emptyList()
+        if (!e.bridged && drop < c.gateShoulderDropArm * armLength) return emptyList()
         val faults = ArrayList<FaultCue>()
         val offsets = rep.map { it.hipOffset }
         if (robustMax(offsets) > c.hipSagBody) faults.add(PushUpFaults.HIPS_SAG)
