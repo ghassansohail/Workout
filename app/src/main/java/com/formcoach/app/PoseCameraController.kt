@@ -11,6 +11,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.formcoach.app.coach.Exercise
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
@@ -22,10 +23,6 @@ import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.sqrt
-
-enum class Exercise(val label: String) {
-    SQUAT("Squat"), PUSH_UP("Push-up"), CURL("Biceps curl")
-}
 
 enum class CameraFacing { FRONT, BACK }
 

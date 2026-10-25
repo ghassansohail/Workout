@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.formcoach.app.coach.Exercise
 
 private val Ink = Color(0xFF101212)
 private val Panel = Color(0xFF1B1F1D)
