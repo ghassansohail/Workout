@@ -21,7 +21,10 @@ import com.formcoach.app.coach.SessionCommand
 import com.formcoach.app.coach.SessionPhase
 import com.formcoach.app.coach.SetSummary
 import com.formcoach.app.coach.Speaker
+import com.formcoach.app.coach.SpeechPolicy
 import com.formcoach.app.coach.SpeechScheduler
+import com.formcoach.app.debug.PoseRecorder
+import com.formcoach.app.voice.VoiceCoach
 import com.formcoach.app.coach.WorkoutEngine
 import com.formcoach.app.coach.WorkoutUiState
 import com.formcoach.app.ui.isSetActive
@@ -41,14 +44,19 @@ import java.util.concurrent.RejectedExecutionException
 /** INTEGRATION: replace with `WorkoutSession()`. */
 internal fun createEngine(): WorkoutEngine = PlaceholderEngine()
 
-/** INTEGRATION: replace with `SpeechPolicy()`. */
-internal fun createSpeechScheduler(): SpeechScheduler = NoOpSpeechScheduler()
+internal fun createSpeechScheduler(): SpeechScheduler = SpeechPolicy()
 
-/** INTEGRATION: replace with `com.formcoach.app.voice.VoiceCoach(context)`. */
-internal fun createSpeaker(context: Context): Speaker = NoOpSpeaker()
+internal fun createSpeaker(context: Context): VoiceCoach = VoiceCoach(context)
 
-/** INTEGRATION: replace with `com.formcoach.app.debug.PoseRecorder(context)`. */
-internal fun createRecorder(context: Context): FrameRecorder? = null
+internal fun createRecorder(context: Context): FrameRecorder {
+    val recorder = PoseRecorder(context)
+    return object : FrameRecorder {
+        override val isRecording: Boolean get() = recorder.isRecording
+        override fun start(exercise: Exercise) = recorder.start(exercise)
+        override fun record(frame: PoseFrame) = recorder.record(frame)
+        override fun stop(): File? = recorder.stop()
+    }
+}
 
 /** Implemented by debug/PoseRecorder. Called only from the camera analysis thread. */
 interface FrameRecorder {
@@ -101,18 +109,6 @@ internal class PlaceholderEngine : WorkoutEngine {
     }
 }
 
-internal class NoOpSpeechScheduler : SpeechScheduler {
-    override var muted: Boolean = false
-    override fun onEvents(events: List<CoachEvent>, nowMs: Long) = Unit
-    override fun onTick(nowMs: Long, speaker: Speaker) = Unit
-}
-
-internal class NoOpSpeaker : Speaker {
-    override val isSpeaking: Boolean = false
-    override fun speak(text: String, utteranceId: String, flush: Boolean) = Unit
-    override fun stopAll() = Unit
-}
-
 // ---------------------------------------------------------------------------------------------
 // ViewModel
 // ---------------------------------------------------------------------------------------------
@@ -130,7 +126,7 @@ private const val TICK_MS = 100L
 class WorkoutViewModel(application: Application) : AndroidViewModel(application) {
     private val engine: WorkoutEngine = createEngine()
     private val scheduler: SpeechScheduler = createSpeechScheduler()
-    private val speaker: Speaker = createSpeaker(application)
+    private val speaker: VoiceCoach = createSpeaker(application)
     private val camera = PoseCameraController(application)
 
     private val debuggable =
@@ -280,12 +276,6 @@ class WorkoutViewModel(application: Application) : AndroidViewModel(application)
         }
         camera.close()
         speaker.stopAll()
-        try {
-            speaker.javaClass.getMethod("shutdown").invoke(speaker)
-        } catch (_: NoSuchMethodException) {
-            // The speaker has nothing to release.
-        } catch (e: Exception) {
-            Log.w(TAG, "Speaker shutdown failed", e)
-        }
+        speaker.shutdown()
     }
 }

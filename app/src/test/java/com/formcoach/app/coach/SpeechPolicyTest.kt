@@ -82,7 +82,8 @@ class SpeechPolicyTest {
         // Gap between non-count utterances, measured from the end of the previous one.
         val nc = log.filter { !it.isCount }
         for (i in 1 until nc.size) {
-            assertTrue("gap ${nc[i - 1].text} -> ${nc[i].text}", nc[i].startMs - nc[i - 1].endMs >= 2500)
+            val minGap = if (nc[i].text == "Ready. Go.") 600 else 2500
+            assertTrue("gap ${nc[i - 1].text} -> ${nc[i].text}", nc[i].startMs - nc[i - 1].endMs >= minGap)
         }
     }
 
@@ -100,6 +101,23 @@ class SpeechPolicyTest {
         val r = Rig()
         r.send(start, ready); r.advance(200)
         assertEquals(listOf("Ready. Go."), r.texts)
+    }
+
+    @Test fun readyGoFollowsGoodAfterShortPause() {
+        val r = Rig()
+        r.send(start)
+        r.send(issue("view"))
+        r.advance(3_000) // issue spoken after 1 s stability
+        r.send(issue(null))
+        r.advance(3_000) // "Good." after the gap
+        val good = r.speaker.log.last { it.text == "Good." }
+        r.now = good.endMs
+        r.tick()
+        r.send(ready)
+        r.advance(1_000)
+        val go = r.speaker.log.last { it.text == "Ready. Go." }
+        assertTrue("Ready. Go. waited ${go.startMs - good.endMs} ms", go.startMs - good.endMs <= 700)
+        assertNoOverlap(r)
     }
 
     @Test fun countCutsOffLowerPriorityLine() {

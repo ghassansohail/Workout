@@ -264,7 +264,9 @@ class SpeechPolicy : SpeechScheduler {
             }
             return
         }
-        if (!isCount && now - lastNonCountEndMs < GAP_MS) return
+        // "Ready. Go." starts the set, so it only waits a short breath after the previous line.
+        val gap = if (best.kind == Kind.READY) READY_GAP_MS else GAP_MS
+        if (!isCount && now - lastNonCountEndMs < gap) return
         pending.remove(best)
         speaker.speak(best.text, "u${seq++}", false)
         current = best
@@ -272,6 +274,7 @@ class SpeechPolicy : SpeechScheduler {
 
     private companion object {
         const val GAP_MS = 2_500L
+        const val READY_GAP_MS = 600L
         const val MAX_AGE_MS = 1_500L
         const val SETUP_MAX_AGE_MS = 2_000L
         const val STATE_MAX_AGE_MS = 5_000L
