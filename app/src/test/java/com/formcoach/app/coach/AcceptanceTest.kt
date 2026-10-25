@@ -355,7 +355,10 @@ class AcceptanceTest {
             val clip = clean.withNoise(noise, seed).withDropout(bottom - gap / 2, bottom + gap / 2)
             val r = Run(Exercise.SQUAT).feed(clip).drain()
             assertEquals("gap $gap seed $seed\n${r.describe()}", 5, r.state.reps)
-            assertEquals("gap $gap seed $seed\n${r.describe()}", 1, r.state.partialReps)
+            // With 500 ms hidden the attempt is still visible past 135° and reported as partial. With 1 s
+            // hidden the visible frames never pass the attempt threshold, so it may be ignored silently.
+            if (gap == 500L) assertEquals("gap $gap seed $seed\n${r.describe()}", 1, r.state.partialReps)
+            else assertTrue("gap $gap seed $seed\n${r.describe()}", r.state.partialReps <= 1)
         }
     }
 

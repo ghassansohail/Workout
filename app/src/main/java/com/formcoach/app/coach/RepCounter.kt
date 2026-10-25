@@ -35,6 +35,11 @@ sealed interface RepCounterEvent {
         /** Estimated duration of the whole down phase and the whole up phase (top value <-> bottom). */
         val downMs: Long,
         val upMs: Long,
+        /**
+         * Depth was never seen: it was inside a tracking gap and estimated (see RepCounter.bridgedExtreme).
+         * Movement gates that measure the depth itself (hip or shoulder drop) cannot be checked on such a rep.
+         */
+        val bridged: Boolean = false,
     ) : RepCounterEvent {
         val durationMs: Long get() = endMs - startMs
     }
@@ -270,12 +275,17 @@ class RepCounter(val config: RepCounterConfig) {
         val endMs = firstTopMs
         val duration = endMs - startMs
         var reachedBottom = phase == RepPhase.BOTTOM || phase == RepPhase.UP
+        bridgedGap = null
         if (!reachedBottom && !expired) {
             // The bottom may have been hidden by a tracking gap (dropout within the grace period).
             val est = bridgedExtreme()
             if (est != null && est >= depthD) {
                 reachedBottom = true
+                bridgedGap = lastGap
                 if (extreme < depthD) extreme = depthD
+            } else if (est != null && est > extreme) {
+                // Not deep enough even with the hidden part: the estimate still decides whether it was an attempt.
+                extreme = est
             }
         }
         val event: RepCounterEvent? = when {
@@ -308,6 +318,9 @@ class RepCounter(val config: RepCounterConfig) {
      * straight lines overestimate the depth a little: a shallow 125° squat hidden by a 500 ms gap still
      * estimates ~119°, a 90° squat ~89°.
      */
+    private var lastGap: Pair<Long, Long>? = null
+    private var bridgedGap: Pair<Long, Long>? = null
+
     private fun bridgedExtreme(): Double? {
         var gi = -1
         var gap = 0L
@@ -321,6 +334,7 @@ class RepCounter(val config: RepCounterConfig) {
         if (gi < 1 || gap < config.bridgeMinGapMs || gi + 2 >= sampleT.size) return null
         val t1 = sampleT[gi]
         val t2 = sampleT[gi + 1]
+        lastGap = t1 to t2
         val d1 = sampleD[gi]
         val d2 = sampleD[gi + 1]
         val window = config.bridgeSlopeWindowMs
@@ -365,9 +379,11 @@ class RepCounter(val config: RepCounterConfig) {
                 t90Up = sampleT[i]
             }
         }
+        val gap = bridgedGap
         if (!found) {
-            t90Down = startMs
-            t90Up = endMs
+            // A bridged bottom lies inside the gap; otherwise fall back to the whole rep.
+            t90Down = gap?.first ?: startMs
+            t90Up = gap?.second ?: endMs
         }
         val fTop = ((topD - ref) / ex).coerceIn(0.0, frac)
         val span = frac - fTop
@@ -384,6 +400,7 @@ class RepCounter(val config: RepCounterConfig) {
             bottomEndMs = t90Up,
             downMs = downMs,
             upMs = upMs,
+            bridged = gap != null,
         )
     }
 }

@@ -11,7 +11,8 @@ import com.formcoach.app.coach.exercise.SquatAnalyzer
  *
  * IDLE -> (StartSet) POSITIONING -> (start posture held still 1.5 s; calibrate; Ready) IN_SET
  * IN_SET -> (tracking lost > 1.5 s) PAUSED -> (tracked again and in the top zone) IN_SET
- * IN_SET/PAUSED -> (StopSet, or auto end after >= 1 rep) SET_COMPLETE
+ * IN_SET/PAUSED -> (StopSet, or auto end after >= 1 rep: 8 s rest at the top, 3 s out of the plank for
+ * push-ups, or 20 s PAUSED) SET_COMPLETE
  *
  * COUNTDOWN is instantaneous: the Ready event and the switch to IN_SET happen on the same frame.
  */

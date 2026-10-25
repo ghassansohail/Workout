@@ -26,7 +26,9 @@ object CurlFaults {
  * (elbowY - wristY) / calibrated forearm length (-1 hanging, about +1 fully curled).
  * Side view tracks the locked arm. Front view runs one counter per arm; completions of both arms within
  * [com.formcoach.app.coach.SessionConfig.curlMergeMs] are one rep (both arms together), otherwise each
- * arm counts on its own (alternating curls).
+ * arm counts on its own (alternating curls). A merged rep carries both arms' faults, deduplicated: when one
+ * arm completes while the other is already well on its way back, the count waits (at most curlMergeMs) for
+ * the other arm.
  */
 class CurlAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.CURL, config) {
     private val c = config.curl

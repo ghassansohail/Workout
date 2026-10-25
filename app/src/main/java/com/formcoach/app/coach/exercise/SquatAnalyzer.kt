@@ -265,7 +265,7 @@ class SquatAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.SQUAT, c
     private fun evaluate(e: RepCounterEvent.Completed): List<AnalyzerResult> {
         val rep = frames.between(e.startMs, e.endMs)
         if (!patternGatesPass(rep)) return emptyList()
-        if (view == CameraView.SIDE) {
+        if (view == CameraView.SIDE && !e.bridged) {
             val startHip = rep.first().hipY
             val drop = rep.maxOf { it.hipY } - startHip
             if (drop < c.gateHipDropLeg * legLength) return emptyList()
