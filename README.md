@@ -14,7 +14,7 @@ The coaching checks use a few landmark angles and are a starting point, not a me
 
 ## Open and run
 
-Open this folder in Android Studio with Android SDK 35 installed. This starter checkout does not include Gradle wrapper binaries; use Gradle 8.9 to generate them with `gradle wrapper --gradle-version 8.9`, then sync the project. Run the `app` configuration on an Android 6.0+ phone or emulator with a camera and grant camera access when prompted. For a real workout, a physical device is recommended.
+Open this folder in Android Studio with Android SDK 35 and Java 17 installed. The repo includes a Gradle 8.9 wrapper. From the command line, create `local.properties` with `sdk.dir=<path to your Android SDK>`, then run `./gradlew :app:testDebugUnitTest :app:assembleDebug`. Run the `app` configuration on an Android 6.0+ phone or emulator with a camera and grant camera access when prompted. For a real workout, a physical device is recommended.
 
 The project uses Google ML Kit's bundled pose-detection SDK in stream mode and CameraX's latest-frame analysis strategy. See [Google's Android pose detection guide](https://developers.google.com/ml-kit/vision/pose-detection/android) for SDK details.
 
