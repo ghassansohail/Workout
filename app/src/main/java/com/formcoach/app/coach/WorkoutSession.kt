@@ -51,6 +51,7 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
     private var lastRawMs = 0L
     private var resumeRun = 0
     private var outOfPlankSinceMs: Long? = null
+    private var pausedSinceMs: Long? = null
     private var lastFrameMs = Long.MIN_VALUE
 
     /** Snapshot of the current UI state. */
@@ -84,7 +85,10 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
                     phase = SessionPhase.IDLE
                     instruction = null
                 }
-                SessionPhase.COUNTDOWN, SessionPhase.IN_SET, SessionPhase.PAUSED -> completeSet(timestampMs, events)
+                SessionPhase.COUNTDOWN, SessionPhase.IN_SET, SessionPhase.PAUSED -> {
+                    handleResults(analyzer.flushPending(), timestampMs, events)
+                    completeSet(timestampMs, events)
+                }
                 else -> Unit
             }
             is SessionCommand.SelectExercise -> if (phase == SessionPhase.IDLE || phase == SessionPhase.SET_COMPLETE) {
@@ -120,9 +124,11 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
 
     private fun positioningFrame(frame: PoseFrame, events: MutableList<CoachEvent>) {
         val t = frame.timestampMs
-        val raw = Body.fromFrame(frame, config.tracking.minInFrame)
+        // No calibrated reference yet: undo left/right swaps against the recent majority, before smoothing.
+        val corrected = swapper.correctProvisional(frame, viewDetector.stable ?: viewDetector.candidate)
+        val raw = Body.fromLandmarks(t, frame.imageHeight, corrected, config.tracking.minInFrame)
         val body = smoother.smooth(raw)
-        overlay = toOverlay(frame, frame.landmarks, body)
+        overlay = toOverlay(frame, corrected, body)
 
         if (raw.points.any { it != null }) viewDetector.update(Geometry.viewRatio(body), t)
         val seenView = viewDetector.stable ?: viewDetector.candidate
@@ -216,16 +222,53 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
         primaryValue = analyzer.primaryValue(body, analyzer.view, analyzer.side)
 
         if (phase == SessionPhase.PAUSED) {
+            if (pausedTooLong(t, events)) return
             resumeRun = if (analyzer.inTopZone(body)) resumeRun + 1 else 0
             if (resumeRun < config.session.resumeTopFrames) return
             phase = SessionPhase.IN_SET
             resumeRun = 0
+            pausedSinceMs = null
             outOfPlankSinceMs = null
             instruction = null
             events.add(CoachEvent.TrackingRestored(t))
         }
 
-        for (r in analyzer.process(body)) {
+        handleResults(analyzer.process(body), t, events)
+
+        // Auto set end, only once at least one rep was counted.
+        if (reps >= 1) {
+            val rest = analyzer.restSinceMs()
+            if (rest != null && t - rest >= config.session.restEndMs) {
+                endSetAutomatically(t, events)
+                return
+            }
+            if (analyzer.usesPlankExit) {
+                if (analyzer.inPlank(body)) {
+                    outOfPlankSinceMs = null
+                } else {
+                    val since = outOfPlankSinceMs ?: t.also { outOfPlankSinceMs = it }
+                    if (t - since >= config.session.plankExitEndMs) endSetAutomatically(t, events)
+                }
+            }
+        }
+    }
+
+    /** Flushes a rep the analyzer is still holding (curl merge window), then completes the set. */
+    private fun endSetAutomatically(t: Long, events: MutableList<CoachEvent>) {
+        handleResults(analyzer.flushPending(), t, events)
+        completeSet(t, events)
+    }
+
+    /** PAUSED for [SessionConfig.pausedEndMs] after at least one rep ends the set. */
+    private fun pausedTooLong(t: Long, events: MutableList<CoachEvent>): Boolean {
+        val since = pausedSinceMs ?: return false
+        if (reps < 1 || t - since < config.session.pausedEndMs) return false
+        endSetAutomatically(t, events)
+        return true
+    }
+
+    private fun handleResults(results: List<AnalyzerResult>, t: Long, events: MutableList<CoachEvent>) {
+        for (r in results) {
             when (r) {
                 is AnalyzerResult.Rep -> {
                     reps++
@@ -244,23 +287,6 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
                 }
             }
         }
-
-        // Auto set end, only once at least one rep was counted.
-        if (reps >= 1) {
-            val rest = analyzer.restSinceMs()
-            if (rest != null && t - rest >= config.session.restEndMs) {
-                completeSet(t, events)
-                return
-            }
-            if (analyzer.usesPlankExit) {
-                if (analyzer.inPlank(body)) {
-                    outOfPlankSinceMs = null
-                } else {
-                    val since = outOfPlankSinceMs ?: t.also { outOfPlankSinceMs = it }
-                    if (t - since >= config.session.plankExitEndMs) completeSet(t, events)
-                }
-            }
-        }
     }
 
     private fun isOutlier(signals: DoubleArray, t: Long): Boolean {
@@ -268,18 +294,22 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
         if (prev.size != signals.size) return false
         val dt = (t - lastRawMs) / 1000.0
         if (dt <= 0.0) return false
-        val maxRate = analyzer.maxRatePerSec
-        return signals.indices.any { kotlin.math.abs(signals[it] - prev[it]) / dt > maxRate }
+        val maxJump = analyzer.maxRatePerSec * dt + analyzer.outlierSlack
+        return signals.indices.any { kotlin.math.abs(signals[it] - prev[it]) > maxJump }
     }
 
     private fun onDropout(t: Long, events: MutableList<CoachEvent>) {
         if (phase == SessionPhase.PAUSED) {
             resumeRun = 0
+            pausedTooLong(t, events)
             return
         }
         val last = lastGoodMs ?: t.also { lastGoodMs = it }
         if (t - last > config.tracking.dropoutGraceMs) {
+            // A rep held back by the analyzer (curl merge window) was complete: count it before pausing.
+            handleResults(analyzer.flushPending(), t, events)
             phase = SessionPhase.PAUSED
+            pausedSinceMs = t
             analyzer.abandon()
             resumeRun = 0
             lastRawSignals = null
@@ -349,6 +379,7 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
         lastRawSignals = null
         resumeRun = 0
         outOfPlankSinceMs = null
+        pausedSinceMs = null
         displayView = null
         displaySide = null
         primaryValue = "--"

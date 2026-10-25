@@ -37,6 +37,12 @@ data class TrackingConfig(
     val sideSwapZMargin: Double = 0.05, // TUNE
     /** Front view: a joint pair whose x order flips by more than this (vs calibration) is swapped. */
     val frontSwapXMargin: Double = 0.02, // TUNE
+    /**
+     * POSITIONING swap correction (no calibrated reference yet): majority over this many recent frames.
+     * TUNE: checked against AcceptanceTest row 7 (5% swaps during positioning, squat front/side, curls).
+     */
+    val provisionalSwapWindow: Int = 30, // TUNE
+    val provisionalSwapMinVotes: Int = 5, // TUNE
 )
 
 data class SessionConfig(
@@ -55,10 +61,23 @@ data class SessionConfig(
     val restEndMs: Long = 8000, // TUNE
     /** Auto set end for push-ups (only after >= 1 rep): out of the plank this long. */
     val plankExitEndMs: Long = 3000, // TUNE
+    /**
+     * Auto set end (only after >= 1 rep): PAUSED this long. Without it a user who walks away mid-set leaves
+     * the set open forever. TUNE: checked against AcceptanceTest pausedTwentySecondsAfterARepEndsTheSet and
+     * pausedShorterThanTwentySecondsResumes (an 18 s pause resumes).
+     */
+    val pausedEndMs: Long = 20_000, // TUNE
     /** PAUSED -> IN_SET needs the primary signal in the top zone for this many consecutive frames. */
     val resumeTopFrames: Int = 2, // TUNE
     /** Front-view curls: both arms completing within this window count as one rep. */
     val curlMergeMs: Long = 400, // TUNE
+    /**
+     * Front-view curls: when one arm completes while the other is on its way back and at least this far
+     * (0..1) from its peak to the top zone, the count waits up to [curlMergeMs] for the other arm so one
+     * merged rep carries both arms' faults. Otherwise the count goes out at once (alternating curls).
+     * TUNE: checked against AcceptanceTest row 12/13 and mergedBothArmCurlCarriesBothArmsFaults.
+     */
+    val curlMergeHoldProgress: Double = 0.5, // TUNE
     /** End-of-set advice only for a fault seen on at least this fraction of reps. */
     val faultAdviceMinFraction: Double = 0.3, // TUNE
     /** "Largest"/"throughout" metrics use this percentile of a rep's frames so one noisy frame cannot decide. */
@@ -87,6 +106,12 @@ data class RepCounterConfig(
     val maxDurationMs: Long,
     /** Outlier rejection: maximum believable speed of the raw signal, units per second. */
     val maxRatePerSec: Double,
+    /**
+     * Outlier rejection: a frame is dropped only when the raw signal jumps by more than
+     * maxRatePerSec * dt + this slack since the last accepted frame. The slack absorbs per-frame landmark
+     * noise, which at 30 fps alone exceeds 600°/s (see the TUNE notes on each value).
+     */
+    val outlierSlack: Double,
     val bottomDwellFrames: Int = 2, // TUNE
     val bottomDwellMs: Long = 60, // TUNE
     val topConfirmFrames: Int = 2, // TUNE
@@ -95,6 +120,15 @@ data class RepCounterConfig(
      * averaged over it. Phase durations are extrapolated from the top-zone edge to this level.
      */
     val bottomFraction: Double = 0.9, // TUNE
+    /**
+     * A tracking gap of at least this long inside a rep that never showed depth may have hidden the bottom
+     * (one leg hides the other at the bottom of a squat). The depth reached in the gap is then estimated by
+     * extrapolating the signal's slopes on both sides of the gap. TUNE: checked against AcceptanceTest row 5
+     * (500 ms dropout at the bottom of a 2 s squat; the visible frames only reach ~102°).
+     */
+    val bridgeMinGapMs: Long = 150, // TUNE
+    /** Bridging: the slopes on each side of the gap are fitted over this much of the signal. */
+    val bridgeSlopeWindowMs: Long = 170, // TUNE: AcceptanceTest row 5 (30 and 15 fps)
 )
 
 data class SquatConfig(
@@ -108,6 +142,7 @@ data class SquatConfig(
         minDurationMs = 600, // TUNE
         maxDurationMs = 8000, // TUNE
         maxRatePerSec = 600.0, // TUNE
+        outlierSlack = 20.0, // TUNE: AcceptanceTest fast squats/push-ups (0.7 s reps, 1% noise, 30 fps)
     ),
     val frontCounter: RepCounterConfig = RepCounterConfig(
         deeperIsLower = false,
@@ -119,6 +154,7 @@ data class SquatConfig(
         minDurationMs = 600, // TUNE
         maxDurationMs = 8000, // TUNE
         maxRatePerSec = 4.0, // TUNE: "equivalent" of 600°/s for the hip drop ratio
+        outlierSlack = 0.1, // TUNE: AcceptanceTest front squats (1% noise ~ 0.02 frame-to-frame)
     ),
     // Movement gates (plan Phase 4).
     val gateAnkleMoveLeg: Double = 0.10, // TUNE: ankles move < 0.10 leg length
@@ -149,6 +185,7 @@ data class PushUpConfig(
         minDurationMs = 500, // TUNE
         maxDurationMs = 8000, // TUNE
         maxRatePerSec = 600.0, // TUNE
+        outlierSlack = 20.0, // TUNE: AcceptanceTest extra_pushUpFastReps (0.7 s reps, 1% noise, 30 fps)
     ),
     val gatePlankLineDeg: Double = 35.0, // TUNE: shoulder-ankle line within 35° of horizontal throughout
     val gateWristMoveArm: Double = 0.15, // TUNE
@@ -173,6 +210,7 @@ data class CurlConfig(
         minDurationMs = 500, // TUNE
         maxDurationMs = 8000, // TUNE
         maxRatePerSec = 12.0, // TUNE: "equivalent" of 600°/s for the wrist lift ratio
+        outlierSlack = 0.4, // TUNE: AcceptanceTest curl rows (1% noise ~ 0.14 frame-to-frame on the lift ratio)
     ),
     val gateUpperArmDeg: Double = 40.0, // TUNE: upper arm within 40° of vertical throughout
     // TUNE: elbow moves < this many torso lengths relative to the shoulder. The plan says 0.2, but with an

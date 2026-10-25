@@ -58,6 +58,7 @@ class PushUpAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.PUSH_UP
     private val frames = FrameBuffer<F>(c.counter.maxDurationMs + 3000)
 
     override val maxRatePerSec: Double get() = c.counter.maxRatePerSec
+    override val outlierSlack: Double get() = c.counter.outlierSlack
 
     override fun primaryLabel(view: CameraView) = "ELBOW ANGLE"
 

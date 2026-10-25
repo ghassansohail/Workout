@@ -264,10 +264,59 @@ class SwapCorrector(private val config: TrackingConfig) {
     /** Per joint pair: sign of (left.x - right.x) at calibration, or 0 when unknown. */
     private val pairSign = IntArray(PAIRS.size)
 
+    // POSITIONING: recent votes (+1/-1) per front-view pair and per side-view chain.
+    private val pairVotes = List(PAIRS.size) { ArrayDeque<Int>() }
+    private val chainVotes = List(CHAINS.size) { ArrayDeque<Int>() }
+
     fun reset() {
         view = null
         lockedSide = null
         pairSign.fill(0)
+        pairVotes.forEach { it.clear() }
+        chainVotes.forEach { it.clear() }
+    }
+
+    /**
+     * Before calibration there is no locked reference, but a detector's left/right swaps are brief and rare,
+     * so the majority of the last [TrackingConfig.provisionalSwapWindow] frames is the reference: in a front
+     * view the x order of each joint pair, in a side view which side of each limb chain is nearer (z).
+     * A frame that clearly disagrees with the majority is swapped back. Swaps must be undone before the
+     * One Euro filter, or each swapped frame drags the smoothed joints across the body.
+     */
+    fun correctProvisional(frame: PoseFrame, view: CameraView?): Array<Landmark?> {
+        val src = frame.landmarks
+        val h = frame.imageHeight.coerceAtLeast(1).toDouble()
+        val out = src.copyOf()
+        when (view) {
+            CameraView.FRONT -> for ((k, group) in PAIRS.withIndex()) {
+                val l = src[group.first()] ?: continue
+                val r = src[mirrorLandmarkId(group.first())] ?: continue
+                val dx = (l.x - r.x) / h
+                if (kotlin.math.abs(dx) < config.frontSwapXMargin) continue
+                val vote = if (dx > 0) 1 else -1
+                val majority = vote(pairVotes[k], vote)
+                if (majority != 0 && vote != majority) group.forEach { swap(out, src, it) }
+            }
+            CameraView.SIDE -> for ((k, chain) in CHAINS.withIndex()) {
+                val lz = chainZ(src, chain, BodySide.LEFT, h) ?: continue
+                val rz = chainZ(src, chain, BodySide.RIGHT, h) ?: continue
+                if (kotlin.math.abs(lz - rz) < config.sideSwapZMargin) continue
+                val vote = if (lz < rz) 1 else -1 // +1: left is nearer
+                val majority = vote(chainVotes[k], vote)
+                if (majority != 0 && vote != majority) chain.forEach { swap(out, src, it) }
+            }
+            else -> Unit
+        }
+        return out
+    }
+
+    /** Adds [vote] to [window] and returns the majority before it (0 while too few votes or tied). */
+    private fun vote(window: ArrayDeque<Int>, vote: Int): Int {
+        val sum = window.sum()
+        val majority = if (window.size < config.provisionalSwapMinVotes || sum == 0) 0 else if (sum > 0) 1 else -1
+        window.addLast(vote)
+        while (window.size > config.provisionalSwapWindow) window.removeFirst()
+        return majority
     }
 
     fun lockFront(bodies: List<Body>) {

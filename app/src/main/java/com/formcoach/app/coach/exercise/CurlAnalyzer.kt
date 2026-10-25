@@ -59,11 +59,16 @@ class CurlAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.CURL, con
 
     private class F(val t: Long, val lean: Double, val arms: Map<BodySide, ArmF>)
 
+    /** A completed arm rep held back for up to curlMergeMs, waiting for the other arm. */
+    private class Pending(val arm: Arm, val t: Long, val faults: List<FaultCue>)
+
+    private var pending: Pending? = null
     private var arms: List<Arm> = emptyList()
     private var torsoLength = 0.3
     private val frames = FrameBuffer<F>(c.counter.maxDurationMs + 3000)
 
     override val maxRatePerSec: Double get() = c.counter.maxRatePerSec
+    override val outlierSlack: Double get() = c.counter.outlierSlack
 
     override fun primaryLabel(view: CameraView) = "WRIST LIFT"
 
@@ -187,6 +192,12 @@ class CurlAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.CURL, con
         frames.add(f.t, f)
 
         val out = ArrayList<AnalyzerResult>()
+        pending?.let { p ->
+            if (f.t - p.t > config.session.curlMergeMs) {
+                pending = null
+                out.add(AnalyzerResult.Rep(f.t, p.faults))
+            }
+        }
         for ((i, a) in arms.withIndex()) {
             when (val e = a.counter.update(f.t, sig[i])) {
                 is RepCounterEvent.Completed -> evaluate(a, e)?.let { faults -> onArmRep(a, e.confirmMs, faults, out) }
@@ -205,9 +216,20 @@ class CurlAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.CURL, con
     private fun onArmRep(a: Arm, t: Long, faults: List<FaultCue>, out: MutableList<AnalyzerResult>) {
         a.reps++
         val o = other(a)
+        val p = pending
+        if (o != null && p != null && p.arm === o && t - p.t <= config.session.curlMergeMs) {
+            // Both arms together: one rep carrying both arms' faults, each fault once.
+            pending = null
+            a.lastRepAt = t
+            a.lastRepMerged = true
+            o.lastRepMerged = true
+            out.add(AnalyzerResult.Rep(t, (p.faults + faults).distinctBy { it.id }))
+            return
+        }
         val oAt = o?.lastRepAt
         if (o != null && oAt != null && !o.lastRepMerged && t - oAt <= config.session.curlMergeMs) {
-            // Both arms together: the other arm already produced the count.
+            // Both arms together, but the other arm's count already went out (it was not held because this
+            // arm was still far from the top): no second count, and this arm's faults cannot be added.
             a.lastRepAt = t
             a.lastRepMerged = true
             o.lastRepMerged = true
@@ -215,7 +237,18 @@ class CurlAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.CURL, con
         }
         a.lastRepAt = t
         a.lastRepMerged = false
-        out.add(AnalyzerResult.Rep(t, faults))
+        val oProgress = o?.counter?.returnProgress()
+        if (oProgress != null && oProgress >= config.session.curlMergeHoldProgress) {
+            pending = Pending(a, t, faults)
+        } else {
+            out.add(AnalyzerResult.Rep(t, faults))
+        }
+    }
+
+    override fun flushPending(): List<AnalyzerResult> {
+        val p = pending ?: return emptyList()
+        pending = null
+        return listOf(AnalyzerResult.Rep(p.t, p.faults))
     }
 
     private fun onArmPartial(a: Arm, t: Long, kind: PartialKind, out: MutableList<AnalyzerResult>) {

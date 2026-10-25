@@ -75,6 +75,8 @@ class SquatAnalyzer(config: ExerciseConfig) : ExerciseAnalyzer(Exercise.SQUAT, c
 
     override val maxRatePerSec: Double
         get() = if (view == CameraView.FRONT) c.frontCounter.maxRatePerSec else c.sideCounter.maxRatePerSec
+    override val outlierSlack: Double
+        get() = if (view == CameraView.FRONT) c.frontCounter.outlierSlack else c.sideCounter.outlierSlack
 
     override fun primaryLabel(view: CameraView) = if (view == CameraView.FRONT) "HIP DROP" else "KNEE ANGLE"
 
