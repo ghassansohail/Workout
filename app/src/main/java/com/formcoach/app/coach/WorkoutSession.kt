@@ -202,6 +202,8 @@ class WorkoutSession(private val config: ExerciseConfig = ExerciseConfig()) : Wo
             if (s != null && !isOutlier(s, t)) signals = s
         }
         if (signals == null) {
+            // Show what the model sees (unsmoothed) so the UI can grey out the missing joints.
+            overlay = if (frame.hasPerson) PoseFrame(t, frame.imageWidth, frame.imageHeight, corrected) else null
             onDropout(t, events)
             return
         }
