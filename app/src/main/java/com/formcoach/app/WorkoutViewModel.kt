@@ -13,19 +13,17 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.formcoach.app.camera.CameraFacing
 import com.formcoach.app.camera.PoseCameraController
-import com.formcoach.app.coach.CoachEvent
 import com.formcoach.app.coach.EngineOutput
 import com.formcoach.app.coach.Exercise
 import com.formcoach.app.coach.PoseFrame
 import com.formcoach.app.coach.SessionCommand
-import com.formcoach.app.coach.SessionPhase
-import com.formcoach.app.coach.SetSummary
 import com.formcoach.app.coach.Speaker
 import com.formcoach.app.coach.SpeechPolicy
 import com.formcoach.app.coach.SpeechScheduler
 import com.formcoach.app.debug.PoseRecorder
 import com.formcoach.app.voice.VoiceCoach
 import com.formcoach.app.coach.WorkoutEngine
+import com.formcoach.app.coach.WorkoutSession
 import com.formcoach.app.coach.WorkoutUiState
 import com.formcoach.app.ui.isSetActive
 import kotlinx.coroutines.delay
@@ -41,8 +39,7 @@ import java.util.concurrent.RejectedExecutionException
 // Factory functions. The integrator swaps one line in each to wire the real implementations.
 // ---------------------------------------------------------------------------------------------
 
-/** INTEGRATION: replace with `WorkoutSession()`. */
-internal fun createEngine(): WorkoutEngine = PlaceholderEngine()
+internal fun createEngine(): WorkoutEngine = WorkoutSession()
 
 internal fun createSpeechScheduler(): SpeechScheduler = SpeechPolicy()
 
@@ -64,49 +61,6 @@ interface FrameRecorder {
     fun start(exercise: Exercise)
     fun record(frame: PoseFrame)
     fun stop(): File?
-}
-
-// ---------------------------------------------------------------------------------------------
-// Placeholders
-// ---------------------------------------------------------------------------------------------
-
-internal class PlaceholderEngine : WorkoutEngine {
-    private var state = WorkoutUiState()
-
-    override fun onFrame(frame: PoseFrame): EngineOutput {
-        state = state.copy(tracking = frame.hasPerson, overlay = frame)
-        return EngineOutput(state, emptyList())
-    }
-
-    override fun onCommand(command: SessionCommand, timestampMs: Long): EngineOutput {
-        val idle = state.phase == SessionPhase.IDLE || state.phase == SessionPhase.SET_COMPLETE
-        val events = mutableListOf<CoachEvent>()
-        when (command) {
-            SessionCommand.StartSet -> if (idle) {
-                state = state.copy(
-                    phase = SessionPhase.POSITIONING,
-                    reps = 0,
-                    partialReps = 0,
-                    summary = null,
-                    placementHint = placementHintFor(state.exercise),
-                )
-                events += CoachEvent.SetStarted(timestampMs, state.exercise)
-            }
-            SessionCommand.StopSet -> if (!idle) {
-                val summary = SetSummary(state.reps, state.partialReps, null)
-                state = state.copy(phase = SessionPhase.SET_COMPLETE, summary = summary, placementHint = null)
-                events += CoachEvent.SetCompleted(timestampMs, summary)
-            }
-            is SessionCommand.SelectExercise -> if (idle) state = state.copy(exercise = command.exercise)
-        }
-        return EngineOutput(state, events)
-    }
-
-    private fun placementHintFor(exercise: Exercise): String = when (exercise) {
-        Exercise.SQUAT -> "Phone at hip height, 2-3 m away, side-on or facing you."
-        Exercise.PUSH_UP -> "Phone on the floor, landscape, side-on, 1.5-2 m away."
-        Exercise.CURL -> "Phone at chest height, 1.5-2 m away."
-    }
 }
 
 // ---------------------------------------------------------------------------------------------
